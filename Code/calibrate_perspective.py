@@ -3,37 +3,38 @@ import cv2
 import numpy as np
 import argparse
 import os
+import glob
 import yaml
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Manually select 8 points for perspective transform (2 regions of 4 points each).")
-    parser.add_argument('--VideoFilePath', default='../Data/Project2_Dataset2/data_2/harder_challenge_video.mp4',
-                        help='Path to input video file')
-    parser.add_argument('--ImageFilePath', default='',
-                        help='Optional: Use an image instead of video')
+        description="Manually select 8 points for perspective transform using the first image in a directory."
+    )
+    parser.add_argument('--InputDir', default='../Data/Project2_Dataset2/data_2/images',
+                        help='Directory containing input .png images (will use the first one)')
     parser.add_argument('--OutputFile', default='perspective_points.yaml',
                         help='Output YAML file to save the 8 points')
     args = parser.parse_args()
 
-    # Load original frame
-    if args.ImageFilePath and os.path.exists(args.ImageFilePath):
-        orig_img = cv2.imread(args.ImageFilePath)
-        print(f"Loaded image: {args.ImageFilePath}")
-    else:
-        cap = cv2.VideoCapture(args.VideoFilePath)
-        if not cap.isOpened():
-            print(f"Error: Cannot open video {args.VideoFilePath}")
-            return
-        ret, frame = cap.read()
-        cap.release()
-        if not ret:
-            print("Error: Cannot read first frame from video.")
-            return
-        orig_img = frame.copy()
-        print(f"Loaded first frame from video: {args.VideoFilePath}")
+    # Find all PNG files (case-insensitive)
+    png_files = glob.glob(os.path.join(args.InputDir, "*.png")) + \
+                glob.glob(os.path.join(args.InputDir, "*.PNG"))
 
+    if not png_files:
+        print(f"Error: No .png files found in {args.InputDir}")
+        return
+
+    png_files.sort()
+    first_image_path = png_files[0]
+
+    # Load the first image
+    orig_img = cv2.imread(first_image_path)
+    if orig_img is None:
+        print(f"Error: Could not load image {first_image_path}")
+        return
+
+    print(f"Loaded first image: {first_image_path}")
     h_orig, w_orig = orig_img.shape[:2]
     print(f"Original image size: {w_orig} x {h_orig}")
 
@@ -49,11 +50,9 @@ def main():
 
     def click_and_crop(event, x, y, flags, param):
         if event == cv2.EVENT_LBUTTONDOWN and len(points_orig) < 8:
-            # Convert display coordinate back to original image coordinate
             x_orig = int(x / scale)
             y_orig = int(y / scale)
-            points_orig.append((x_orig, y_orig))  # Still tuple internally
-            # Draw on display image
+            points_orig.append((x_orig, y_orig))
             cv2.circle(disp_img, (x, y), 5, (0, 255, 0), -1)
             cv2.imshow("Select 8 Points: [Left Region: BL, UL, UR, BR], [Right Region: BL, UL, UR, BR]", disp_img)
             print(f"Point {len(points_orig)}: ({x_orig}, {y_orig}) in original image")
@@ -71,13 +70,12 @@ def main():
     print("  8. Bottom-right (BR)")
     print("Press 'r' to reset, 'q' to quit.")
 
-    cv2.namedWindow("Select 8 Points: [Left Region: BL, UL, UR, BR], [Right Region: BL, UL, UR, BR]",
-                    cv2.WINDOW_AUTOSIZE)
-    cv2.setMouseCallback("Select 8 Points: [Left Region: BL, UL, UR, BR], [Right Region: BL, UL, UR, BR]",
-                         click_and_crop)
+    window_name = "Select 8 Points: [Left Region: BL, UL, UR, BR], [Right Region: BL, UL, UR, BR]"
+    cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
+    cv2.setMouseCallback(window_name, click_and_crop)
 
     while True:
-        cv2.imshow("Select 8 Points: [Left Region: BL, UL, UR, BR], [Right Region: BL, UL, UR, BR]", disp_img)
+        cv2.imshow(window_name, disp_img)
         key = cv2.waitKey(1) & 0xFF
         if key == ord("r"):
             disp_img[:] = clone_disp[:]
@@ -95,7 +93,6 @@ def main():
             corner = ["BL", "UL", "UR", "BR"][i % 4]
             print(f"  Point {i + 1} ({region} {corner}): ({pt[0]}, {pt[1]})")
 
-        # Convert tuples to lists for clean YAML output
         src_points_list = [list(pt) for pt in points_orig]
 
         data = {
@@ -105,15 +102,12 @@ def main():
             'image_size': [w_orig, h_orig]
         }
 
-        # Write YAML with clean format
         with open(args.OutputFile, 'w') as f:
             yaml.dump(data, f, default_flow_style=None, sort_keys=False)
         print(f"\nSaved to {args.OutputFile}")
 
-        # Visualize on original image (small window)
+        # Visualize on original image
         visual = orig_img.copy()
-
-        # Draw left region
         for i in range(4):
             pt = points_orig[i]
             cv2.circle(visual, pt, 10, (0, 255, 0), -1)
@@ -122,7 +116,6 @@ def main():
         left_pts = np.array(points_orig[:4], np.int32).reshape((-1, 1, 2))
         cv2.polylines(visual, [left_pts], isClosed=True, color=(0, 0, 255), thickness=3)
 
-        # Draw right region
         for i in range(4, 8):
             pt = points_orig[i]
             cv2.circle(visual, pt, 10, (0, 255, 0), -1)
@@ -131,7 +124,6 @@ def main():
         right_pts = np.array(points_orig[4:], np.int32).reshape((-1, 1, 2))
         cv2.polylines(visual, [right_pts], isClosed=True, color=(255, 0, 255), thickness=3)
 
-        # Resize final viz for display
         vis_disp = cv2.resize(visual, (disp_w, disp_h))
         cv2.imshow("Selected Points (Original Coordinates)", vis_disp)
         print("Press any key to close.")
