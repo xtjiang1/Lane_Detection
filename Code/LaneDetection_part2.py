@@ -132,8 +132,6 @@ def analyze_line_pattern(mask, points):
     if len(points) < 2:
         return 'Unknown', 0.0
 
-    print(f"DEBUG: analyze_line_pattern - points count: {len(points)}")
-
     y_coords = [p[0] for p in points]
 
     sorted_points = sorted(points, key=lambda x: x[0])
@@ -149,43 +147,64 @@ def analyze_line_pattern(mask, points):
     avg_gap = np.mean(gaps)
     std_gap = np.std(gaps)
 
-    print(f"DEBUG: avg_gap: {avg_gap}, std_gap: {std_gap}")
-
     unique_y_values = len(set(y_coords))
     total_y_range = max(y_coords) - min(y_coords) if max(y_coords) != min(y_coords) else 1
     density = unique_y_values / total_y_range
-
-    print(f"DEBUG: density: {density}")
 
     GAP_THRESHOLD = 10
     STD_THRESHOLD = 5
     AREA_THRESHOLD = 150
 
-    print(f"DEBUG: Comparing avg_gap({avg_gap}) > {GAP_THRESHOLD} and std_gap({std_gap}) > {STD_THRESHOLD}")
-
     if avg_gap > GAP_THRESHOLD and std_gap > STD_THRESHOLD:
         confidence = min(0.95, 0.3 + 0.7 * (avg_gap / (avg_gap + 5)))
-        print(f"DEBUG: Classified as Dashed with confidence: {confidence}")
         return 'Dashed', confidence
     elif density > 0.8:
         confidence = min(0.95, 0.3 + 0.7 * density)
-        print(f"DEBUG: Classified as Solid due to high density with confidence: {confidence}")
         return 'Solid', confidence
     else:
         num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask)
-        print(f"DEBUG: Connected components: {num_labels}")
         if num_labels > 3:
             avg_area = np.mean(stats[1:, cv2.CC_STAT_AREA])
-            print(f"DEBUG: avg_area: {avg_area}")
             if avg_area < AREA_THRESHOLD:
-                print(f"DEBUG: Classified as Dashed based on component areas")
                 return 'Dashed', 0.8
             else:
-                print(f"DEBUG: Classified as Solid based on component areas")
                 return 'Solid', 0.7
         else:
-            print(f"DEBUG: Classified as Solid (single component)")
             return 'Solid', 0.9
+
+
+def prioritize_solid_over_dashed(points, binary_mask, detected_pattern):
+    """
+    当同时检测到实线和虚线时，优先选择实线
+    """
+    if detected_pattern == 'Solid':
+        return 'Solid'
+
+    # 检查是否有足够的连续像素来确认实线
+    if len(points) > 0:
+        # 计算点的密度
+        y_coords = [p[0] for p in points]
+        x_coords = [p[1] for p in points]
+
+        # 检查纵向连续性
+        sorted_points = sorted(points, key=lambda x: x[0])
+        consecutive_count = 1
+        max_consecutive = 1
+
+        for i in range(1, len(sorted_points)):
+            if abs(sorted_points[i][0] - sorted_points[i - 1][0]) <= 2:  # 允许间隔1-2个像素
+                consecutive_count += 1
+            else:
+                max_consecutive = max(max_consecutive, consecutive_count)
+                consecutive_count = 1
+
+        max_consecutive = max(max_consecutive, consecutive_count)
+
+        # 如果有足够的连续像素，优先认定为实线
+        if max_consecutive > 10:  # 阈值可以根据实际情况调整
+            return 'Solid'
+
+    return detected_pattern
 
 
 def extractWhiteYellow_separate(image):
@@ -368,8 +387,8 @@ def findCurvature(coef, x):
         return 10000.0
     R = (1 + dy ** 2) ** (3 / 2)
     R = R / d2y
-    R = np.abs(R)
-    R = np.nan_to_num(R, nan=10000.0, posinf=10000.0, neginf=10000.0)
+    # 移除绝对值，保留符号信息
+    R = np.nan_to_num(R, nan=10000.0, posinf=10000.0, neginf=-10000.0)
     return np.min(R)
 
 
@@ -410,11 +429,15 @@ def determine_lane_type_from_warped_masks(points, warped_white, warped_yellow):
     xs = np.array([p[1] for p in points])
 
     h_w, w_w = warped_white.shape
+
     ys = np.clip(ys, 0, h_w - 1)
     xs = np.clip(xs, 0, w_w - 1)
 
-    white_hits = np.sum(warped_white[ys, xs] > 0)
-    yellow_hits = np.sum(warped_yellow[ys, xs] > 0)
+    white_pixels = warped_white[ys, xs]
+    yellow_pixels = warped_yellow[ys, xs]
+
+    white_hits = np.sum(white_pixels > 0)
+    yellow_hits = np.sum(yellow_pixels > 0)
 
     total = len(points)
 
@@ -477,37 +500,28 @@ def finalDisplay(image_undistorted, image_bin, image_warped_colored, display_ima
         round(right_curvature, 2))
     info_pannel = cv2.putText(info_pannel, curve_string, (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2,
                               cv2.LINE_AA)
+
     turn_curvature = "Curvature not found!"
     turn = old_turn
+
+    # 修改这部分代码 - 反转左右转向判断
     if not (np.isnan(left_curvature) or np.isnan(right_curvature)) and left_curvature != 0 and right_curvature != 0:
         left_sign = 1 if left_curvature > 0 else -1
         right_sign = 1 if right_curvature > 0 else -1
         if left_sign == right_sign:
             av = 0.3 * left_curvature + 0.7 * right_curvature
-            turn_curvature = "Average Curvature : " + str(round(av, 2))
+            # 反转转向判断逻辑
             if av < 4000 and av > 0:
-                turn = "Turn Left"
+                turn = "Turn Right"  # 原来是Turn Left，现在改为Turn Right
             elif np.abs(av) > 4000:
                 turn = "Go Straight"
             elif av < 0 and av > -4000:
-                turn = "Turn Right"
+                turn = "Turn Left"  # 原来是Turn Right，现在改为Turn Left
             else:
                 turn = "Go Straight"
         else:
-            global_state_ref = globals().get('global_state', {'left_avg_x': None, 'right_avg_x': None})
-            left_avg_x = global_state_ref['left_avg_x']
-            right_avg_x = global_state_ref['right_avg_x']
-            if left_avg_x is not None and right_avg_x is not None:
-                shift_threshold = 20
-                if abs(left_avg_x - right_avg_x) > shift_threshold:
-                    if left_avg_x < right_avg_x:
-                        turn = "Shift Left"
-                    else:
-                        turn = "Shift Right"
-                else:
-                    turn = "Go Straight"
-            else:
-                turn = "Go Straight"
+            # 移除平移检测部分，只保留基本转向判断
+            turn = "Go Straight"
     else:
         turn = "Go Straight"
     if stream_bad:
@@ -517,7 +531,8 @@ def finalDisplay(image_undistorted, image_bin, image_warped_colored, display_ima
     full_pannel = cv2.putText(full_pannel, turn, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
     turn_info_y = 80
     lane_type_below_turn = f"Left: {left_lane_type}({left_confidence:.2f})-{left_line_pattern}, Right: {right_lane_type}({right_confidence:.2f})-{right_line_pattern}"
-    full_pannel = cv2.putText(full_pannel, lane_type_below_turn, (50, turn_info_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 1, cv2.LINE_AA)
+    full_pannel = cv2.putText(full_pannel, lane_type_below_turn, (50, turn_info_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                              (0, 0, 255), 1, cv2.LINE_AA)
     full_pannel = np.vstack((full_pannel, info_pannel))
     return full_pannel, turn
 
@@ -532,12 +547,6 @@ def process_frame_for_moviepy(frame_bgr):
     moving_average_R_l = global_state['moving_average_R_l']
     R_l_old = global_state['R_l_old']
     turn = global_state['turn']
-    left_lane_type = global_state['left_lane_type']
-    right_lane_type = global_state['right_lane_type']
-    left_line_pattern = global_state['left_line_pattern']
-    right_line_pattern = global_state['right_line_pattern']
-    type_confidence_left = global_state['type_confidence_left']
-    type_confidence_right = global_state['type_confidence_right']
 
     frame_with_points = frame_bgr.copy()
     PerspectiveConfigFile = 'perspective_points.yaml'
@@ -586,26 +595,30 @@ def process_frame_for_moviepy(frame_bgr):
     global_state['left_avg_x'] = left_avg_x
     global_state['right_avg_x'] = right_avg_x
 
+    current_left_lane_type = 'Unknown'
+    current_right_lane_type = 'Unknown'
+    current_left_line_pattern = 'Unknown'
+    current_right_line_pattern = 'Unknown'
+    current_type_confidence_left = 0.0
+    current_type_confidence_right = 0.0
+
     if len(left_indexes) > 0:
         left_type, left_conf = determine_lane_type_from_warped_masks(left_indexes, warped_white, warped_yellow)
-        if left_conf > type_confidence_left:
-            left_lane_type = left_type
-            type_confidence_left = left_conf
-        left_pattern, left_pattern_conf = analyze_line_pattern(warped_white if np.sum(
-            warped_white[left_indexes[0][0]:left_indexes[-1][0], left_indexes[0][1]:left_indexes[-1][1]]) > 0
-                                                               else warped_yellow, left_indexes)
+        if left_conf > current_type_confidence_left:
+            current_left_lane_type = left_type
+            current_type_confidence_left = left_conf
+        left_pattern, left_pattern_conf = analyze_line_pattern(image_warped_binary, left_indexes)
         if left_pattern_conf > 0.6:
-            left_line_pattern = left_pattern
+            current_left_line_pattern = prioritize_solid_over_dashed(left_indexes, image_warped_binary, left_pattern)
+
     if len(right_indexes) > 0:
         right_type, right_conf = determine_lane_type_from_warped_masks(right_indexes, warped_white, warped_yellow)
-        if right_conf > type_confidence_right:
-            right_lane_type = right_type
-            type_confidence_right = right_conf
-        right_pattern, right_pattern_conf = analyze_line_pattern(warped_white if np.sum(
-            warped_white[right_indexes[0][0]:right_indexes[-1][0], right_indexes[0][1]:right_indexes[-1][1]]) > 0
-                                                                 else warped_yellow, right_indexes)
+        if right_conf > current_type_confidence_right:
+            current_right_lane_type = right_type
+            current_type_confidence_right = right_conf
+        right_pattern, right_pattern_conf = analyze_line_pattern(image_warped_binary, right_indexes)
         if right_pattern_conf > 0.6:
-            right_line_pattern = right_pattern
+            current_right_line_pattern = prioritize_solid_over_dashed(right_indexes, image_warped_binary, right_pattern)
 
     left_lane_detected = False
     right_lane_detected = False
@@ -654,8 +667,15 @@ def process_frame_for_moviepy(frame_bgr):
             draw_points_left = draw_points_left.reshape(-1, 1, 2).astype(np.float32)
             draw_points_left_transformed = cv2.perspectiveTransform(draw_points_left, np.linalg.inv(H_left))
             draw_points_left_transformed = (draw_points_left_transformed.reshape(-1, 2)).astype(np.int32)
-            image_overlay = cv2.polylines(image_overlay, [draw_points_left_transformed], False, (255, 0, 0),
-                                          4)
+
+            if current_left_lane_type == 'Yellow':
+                color = (0, 255, 255)
+            elif current_left_lane_type == 'White':
+                color = (255, 255, 255)
+            else:
+                color = (255, 0, 0)
+
+            image_overlay = cv2.polylines(image_overlay, [draw_points_left_transformed], False, color, 4)
         except:
             pass
     if right_lane_detected and draw_points_right is not None:
@@ -663,8 +683,15 @@ def process_frame_for_moviepy(frame_bgr):
             draw_points_right = draw_points_right.reshape(-1, 1, 2).astype(np.float32)
             draw_points_right_transformed = cv2.perspectiveTransform(draw_points_right, np.linalg.inv(H_right))
             draw_points_right_transformed = (draw_points_right_transformed.reshape(-1, 2)).astype(np.int32)
-            image_overlay = cv2.polylines(image_overlay, [draw_points_right_transformed], False, (0, 255, 0),
-                                          4)
+
+            if current_right_lane_type == 'Yellow':
+                color = (0, 255, 255)
+            elif current_right_lane_type == 'White':
+                color = (255, 255, 255)
+            else:
+                color = (0, 255, 0)
+
+            image_overlay = cv2.polylines(image_overlay, [draw_points_right_transformed], False, color, 4)
         except:
             pass
     if (left_lane_detected and draw_points_left is not None and
@@ -693,19 +720,19 @@ def process_frame_for_moviepy(frame_bgr):
         R_r = 10000.0
     full_display, turn = finalDisplay(image_undistorted, image_bin, colored_warped,
                                       display_image, image_overlay, R_l,
-                                      R_r, turn, "", left_lane_type, right_lane_type,
-                                      left_line_pattern, right_line_pattern,
-                                      type_confidence_left, type_confidence_right, stream_bad=False)
+                                      R_r, turn, "", current_left_lane_type, current_right_lane_type,
+                                      current_left_line_pattern, current_right_line_pattern,
+                                      current_type_confidence_left, current_type_confidence_right, stream_bad=False)
 
     global_state['old_left_fit'] = old_left_fit if left_lane_detected else global_state['old_left_fit']
     global_state['old_right_fit'] = old_right_fit if right_lane_detected else global_state['old_right_fit']
     global_state['turn'] = turn
-    global_state['left_lane_type'] = left_lane_type
-    global_state['right_lane_type'] = right_lane_type
-    global_state['left_line_pattern'] = left_line_pattern
-    global_state['right_line_pattern'] = right_line_pattern
-    global_state['type_confidence_left'] = type_confidence_left
-    global_state['type_confidence_right'] = type_confidence_right
+    global_state['left_lane_type'] = current_left_lane_type
+    global_state['right_lane_type'] = current_right_lane_type
+    global_state['left_line_pattern'] = current_left_line_pattern
+    global_state['right_line_pattern'] = current_right_line_pattern
+    global_state['type_confidence_left'] = current_type_confidence_left
+    global_state['type_confidence_right'] = current_type_confidence_right
 
     full_display_rgb = cv2.cvtColor(full_display, cv2.COLOR_BGR2RGB)
     return full_display_rgb
