@@ -22,13 +22,21 @@ global_state = {
     'turn': "Go Straight",
     'left_avg_x': None,
     'right_avg_x': None,
-    'white_dashed_history': None
+    'white_dashed_history': None,
+    'left_lane_type': 'Unknown',
+    'right_lane_type': 'Unknown',
+    'left_line_pattern': 'Unknown',
+    'right_line_pattern': 'Unknown',
+    'type_confidence_left': 0.0,
+    'type_confidence_right': 0.0
 }
+
 
 def calculate_histogram_uniformity(hist):
     hist_normalized = hist / np.sum(hist)
     entropy = -np.sum(hist_normalized * np.log(hist_normalized + 1e-7))
     return entropy
+
 
 def enhanced_clahe_processing(image):
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
@@ -46,6 +54,7 @@ def enhanced_clahe_processing(image):
     enhanced_bgr = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
     return enhanced_bgr
 
+
 def gradient_based_detection_adaptive(image, base_thresh=16):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
@@ -57,6 +66,7 @@ def gradient_based_detection_adaptive(image, base_thresh=16):
     adaptive_thresh = max(base_thresh, int(mean_grad * 0.3))
     _, sobel_binary = cv2.threshold(sobel_mask, adaptive_thresh, 255, cv2.THRESH_BINARY)
     return sobel_binary.astype(np.uint8)
+
 
 def connect_dashed_lines(binary_mask, max_gap=80):
     contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -93,6 +103,7 @@ def connect_dashed_lines(binary_mask, max_gap=80):
 
     return result
 
+
 def enhance_yellow_sensitivity(image):
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
@@ -101,6 +112,7 @@ def enhance_yellow_sensitivity(image):
     enhanced_lab = cv2.merge([l, a, enhanced_b])
     enhanced_img = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
     return enhanced_img
+
 
 def post_process_yellow_detection(yellow_mask, min_area_threshold=50):
     contours, _ = cv2.findContours(yellow_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -114,6 +126,67 @@ def post_process_yellow_detection(yellow_mask, min_area_threshold=50):
     kernel_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
     filtered_mask = cv2.dilate(filtered_mask, kernel_dilate, iterations=1)
     return filtered_mask
+
+
+def analyze_line_pattern(mask, points):
+    if len(points) < 2:
+        return 'Unknown', 0.0
+
+    print(f"DEBUG: analyze_line_pattern - points count: {len(points)}")
+
+    y_coords = [p[0] for p in points]
+
+    sorted_points = sorted(points, key=lambda x: x[0])
+
+    gaps = []
+    for i in range(len(sorted_points) - 1):
+        gap = sorted_points[i + 1][0] - sorted_points[i][0]
+        gaps.append(gap)
+
+    if len(gaps) == 0:
+        return 'Solid', 0.8
+
+    avg_gap = np.mean(gaps)
+    std_gap = np.std(gaps)
+
+    print(f"DEBUG: avg_gap: {avg_gap}, std_gap: {std_gap}")
+
+    unique_y_values = len(set(y_coords))
+    total_y_range = max(y_coords) - min(y_coords) if max(y_coords) != min(y_coords) else 1
+    density = unique_y_values / total_y_range
+
+    print(f"DEBUG: density: {density}")
+
+    GAP_THRESHOLD = 10
+    STD_THRESHOLD = 5
+    AREA_THRESHOLD = 150
+
+    print(f"DEBUG: Comparing avg_gap({avg_gap}) > {GAP_THRESHOLD} and std_gap({std_gap}) > {STD_THRESHOLD}")
+
+    if avg_gap > GAP_THRESHOLD and std_gap > STD_THRESHOLD:
+        confidence = min(0.95, 0.3 + 0.7 * (avg_gap / (avg_gap + 5)))
+        print(f"DEBUG: Classified as Dashed with confidence: {confidence}")
+        return 'Dashed', confidence
+    elif density > 0.8:
+        confidence = min(0.95, 0.3 + 0.7 * density)
+        print(f"DEBUG: Classified as Solid due to high density with confidence: {confidence}")
+        return 'Solid', confidence
+    else:
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask)
+        print(f"DEBUG: Connected components: {num_labels}")
+        if num_labels > 3:
+            avg_area = np.mean(stats[1:, cv2.CC_STAT_AREA])
+            print(f"DEBUG: avg_area: {avg_area}")
+            if avg_area < AREA_THRESHOLD:
+                print(f"DEBUG: Classified as Dashed based on component areas")
+                return 'Dashed', 0.8
+            else:
+                print(f"DEBUG: Classified as Solid based on component areas")
+                return 'Solid', 0.7
+        else:
+            print(f"DEBUG: Classified as Solid (single component)")
+            return 'Solid', 0.9
+
 
 def extractWhiteYellow_separate(image):
     enhanced_image = enhance_yellow_sensitivity(image)
@@ -162,6 +235,7 @@ def extractWhiteYellow_separate(image):
 
     return white_final, yellow_combined
 
+
 def getWarpedBinary(binary_mask, src_points_file):
     h, w = binary_mask.shape[:2]
     with open(src_points_file, 'r') as f:
@@ -170,15 +244,19 @@ def getWarpedBinary(binary_mask, src_points_file):
     right_region = np.array(data['right_region'], dtype=np.float32)
     image_size_x = 300
     image_size_y = 500
-    left_dst_points = np.array([[0, image_size_y], [0, 0], [image_size_x//2, 0], [image_size_x//2, image_size_y]], dtype=np.float32)
-    right_dst_points = np.array([[image_size_x//2, image_size_y], [image_size_x//2, 0], [image_size_x, 0], [image_size_x, image_size_y]], dtype=np.float32)
+    left_dst_points = np.array([[0, image_size_y], [0, 0], [image_size_x // 2, 0], [image_size_x // 2, image_size_y]],
+                               dtype=np.float32)
+    right_dst_points = np.array(
+        [[image_size_x // 2, image_size_y], [image_size_x // 2, 0], [image_size_x, 0], [image_size_x, image_size_y]],
+        dtype=np.float32)
     H_left = cv2.getPerspectiveTransform(left_region, left_dst_points)
     H_right = cv2.getPerspectiveTransform(right_region, right_dst_points)
     warped_left = cv2.warpPerspective(binary_mask, H_left, (image_size_x, image_size_y))
     warped_right = cv2.warpPerspective(binary_mask, H_right, (image_size_x, image_size_y))
     warped = warped_left.copy()
-    warped[:, image_size_x//2:] = warped_right[:, image_size_x//2:]
+    warped[:, image_size_x // 2:] = warped_right[:, image_size_x // 2:]
     return warped, H_left, H_right
+
 
 def getLeftRightPoints_enhanced(image):
     h_w, w_w = image.shape
@@ -234,6 +312,7 @@ def getLeftRightPoints_enhanced(image):
         left_indexes, right_indexes = getLeftRightPoints_supplement(image, left_indexes, right_indexes)
     return left_indexes, right_indexes
 
+
 def getLeftRightPoints_supplement(image, existing_left, existing_right):
     h_w, w_w = image.shape
     strip_width = 20
@@ -258,6 +337,7 @@ def getLeftRightPoints_supplement(image, existing_left, existing_right):
                 existing_right.append((ix_r, iy_r))
     return existing_left, existing_right
 
+
 def addBasePoint(points, max_x):
     pts = np.array(points)
     y = pts[:, 1]
@@ -265,6 +345,7 @@ def addBasePoint(points, max_x):
     y_avg = int(y_avg)
     points.append((max_x, y_avg))
     return points
+
 
 def getCurve(points, order=2):
     indexes = np.array(points)
@@ -275,6 +356,7 @@ def getCurve(points, order=2):
         return fit
     except:
         return np.array([0, 0, 0])
+
 
 def findCurvature(coef, x):
     if len(coef) < 3:
@@ -290,8 +372,79 @@ def findCurvature(coef, x):
     R = np.nan_to_num(R, nan=10000.0, posinf=10000.0, neginf=10000.0)
     return np.min(R)
 
+
+def drawDetections(image, left_indexes, right_indexes):
+    display_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    for point in left_indexes:
+        cv2.circle(display_image, (point[1], point[0]), 3, (255, 0, 0), -1)
+    for point in right_indexes:
+        cv2.circle(display_image, (point[1], point[0]), 3, (0, 255, 0), -1)
+    return display_image
+
+
+def drawCurve(image, fit, color):
+    h, w = image.shape[:2]
+    ploty = np.linspace(0, h - 1, h)
+    if len(fit) == 3:
+        plotx = fit[0] * ploty ** 2 + fit[1] * ploty + fit[2]
+    elif len(fit) == 2:
+        plotx = fit[1] * ploty + fit[0]
+    else:
+        plotx = np.full_like(ploty, w // 2)
+    plotx = np.clip(plotx, 0, w - 1).astype(np.int32)
+    ploty = ploty.astype(np.int32)
+    points = np.vstack((plotx, ploty)).T
+    points = points.reshape((-1, 1, 2))
+    for i in range(len(points) - 1):
+        pt1 = tuple(points[i][0])
+        pt2 = tuple(points[i + 1][0])
+        cv2.line(image, pt1, pt2, color, 2)
+    return image, points
+
+
+def determine_lane_type_from_warped_masks(points, warped_white, warped_yellow):
+    if len(points) == 0:
+        return 'Unknown', 0.0
+
+    ys = np.array([p[0] for p in points])
+    xs = np.array([p[1] for p in points])
+
+    h_w, w_w = warped_white.shape
+    ys = np.clip(ys, 0, h_w - 1)
+    xs = np.clip(xs, 0, w_w - 1)
+
+    white_hits = np.sum(warped_white[ys, xs] > 0)
+    yellow_hits = np.sum(warped_yellow[ys, xs] > 0)
+
+    total = len(points)
+
+    if total <= 5:
+        if white_hits >= 1 and white_hits >= yellow_hits:
+            confidence = min(0.9, 0.3 + 0.1 * white_hits)
+            return 'White', confidence
+        elif yellow_hits >= 1 and yellow_hits > white_hits:
+            confidence = min(0.9, 0.3 + 0.1 * yellow_hits)
+            return 'Yellow', confidence
+        else:
+            return 'Unknown', 0.0
+
+    white_ratio = white_hits / total
+    yellow_ratio = yellow_hits / total
+
+    if white_ratio > 0.2 and white_ratio >= yellow_ratio:
+        confidence = min(0.95, 0.4 + 0.6 * white_ratio)
+        return 'White', confidence
+    elif yellow_ratio > 0.2 and yellow_ratio > white_ratio:
+        confidence = min(0.95, 0.4 + 0.6 * yellow_ratio)
+        return 'Yellow', confidence
+    else:
+        return 'Unknown', 0.0
+
+
 def finalDisplay(image_undistorted, image_bin, image_warped_colored, display_image, image_overlay, left_curvature,
-                 right_curvature, old_turn, shift_status, stream_bad=False):
+                 right_curvature, old_turn, shift_status, left_lane_type='Unknown', right_lane_type='Unknown',
+                 left_line_pattern='Unknown', right_line_pattern='Unknown',
+                 left_confidence=0.0, right_confidence=0.0, stream_bad=False):
     image_undistorted_resized = cv2.resize(image_undistorted, (300, 168))
     image_bin_resized = cv2.resize(image_bin, (300, 168))
     image_bin_resized = cv2.merge((image_bin_resized, image_bin_resized, image_bin_resized))
@@ -300,7 +453,8 @@ def finalDisplay(image_undistorted, image_bin, image_warped_colored, display_ima
     image_bin_resized = cv2.putText(image_bin_resized, '(2)', (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2,
                                     cv2.LINE_AA)
     image_warped_resized = cv2.resize(image_warped_colored, (300, 500))
-    image_warped_resized = cv2.putText(image_warped_resized, '(3)', (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2, cv2.LINE_AA)
+    image_warped_resized = cv2.putText(image_warped_resized, '(3)', (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0),
+                                       2, cv2.LINE_AA)
     display_image_resized = cv2.putText(cv2.resize(display_image, (300, 500)), '(4)', (50, 50),
                                         cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2, cv2.LINE_AA)
     side_pannel = np.zeros((720, 600, 3), np.uint8)
@@ -361,8 +515,12 @@ def finalDisplay(image_undistorted, image_bin, image_warped_colored, display_ima
     info_pannel = cv2.putText(info_pannel, turn_curvature, (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2,
                               cv2.LINE_AA)
     full_pannel = cv2.putText(full_pannel, turn, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
+    turn_info_y = 80
+    lane_type_below_turn = f"Left: {left_lane_type}({left_confidence:.2f})-{left_line_pattern}, Right: {right_lane_type}({right_confidence:.2f})-{right_line_pattern}"
+    full_pannel = cv2.putText(full_pannel, lane_type_below_turn, (50, turn_info_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 1, cv2.LINE_AA)
     full_pannel = np.vstack((full_pannel, info_pannel))
     return full_pannel, turn
+
 
 def process_frame_for_moviepy(frame_bgr):
     global global_state
@@ -374,6 +532,13 @@ def process_frame_for_moviepy(frame_bgr):
     moving_average_R_l = global_state['moving_average_R_l']
     R_l_old = global_state['R_l_old']
     turn = global_state['turn']
+    left_lane_type = global_state['left_lane_type']
+    right_lane_type = global_state['right_lane_type']
+    left_line_pattern = global_state['left_line_pattern']
+    right_line_pattern = global_state['right_line_pattern']
+    type_confidence_left = global_state['type_confidence_left']
+    type_confidence_right = global_state['type_confidence_right']
+
     frame_with_points = frame_bgr.copy()
     PerspectiveConfigFile = 'perspective_points.yaml'
     try:
@@ -420,6 +585,28 @@ def process_frame_for_moviepy(frame_bgr):
         right_avg_x = np.mean([p[1] for p in right_indexes])
     global_state['left_avg_x'] = left_avg_x
     global_state['right_avg_x'] = right_avg_x
+
+    if len(left_indexes) > 0:
+        left_type, left_conf = determine_lane_type_from_warped_masks(left_indexes, warped_white, warped_yellow)
+        if left_conf > type_confidence_left:
+            left_lane_type = left_type
+            type_confidence_left = left_conf
+        left_pattern, left_pattern_conf = analyze_line_pattern(warped_white if np.sum(
+            warped_white[left_indexes[0][0]:left_indexes[-1][0], left_indexes[0][1]:left_indexes[-1][1]]) > 0
+                                                               else warped_yellow, left_indexes)
+        if left_pattern_conf > 0.6:
+            left_line_pattern = left_pattern
+    if len(right_indexes) > 0:
+        right_type, right_conf = determine_lane_type_from_warped_masks(right_indexes, warped_white, warped_yellow)
+        if right_conf > type_confidence_right:
+            right_lane_type = right_type
+            type_confidence_right = right_conf
+        right_pattern, right_pattern_conf = analyze_line_pattern(warped_white if np.sum(
+            warped_white[right_indexes[0][0]:right_indexes[-1][0], right_indexes[0][1]:right_indexes[-1][1]]) > 0
+                                                                 else warped_yellow, right_indexes)
+        if right_pattern_conf > 0.6:
+            right_line_pattern = right_pattern
+
     left_lane_detected = False
     right_lane_detected = False
     if (len(left_indexes) > 2):
@@ -454,12 +641,12 @@ def process_frame_for_moviepy(frame_bgr):
             right_lane_detected = False
     if left_lane_detected:
         try:
-            display_image, draw_points_left = drawCurve(display_image, left_fit, (0, 0, 255))
+            display_image, draw_points_left = drawCurve(display_image, left_fit, (255, 0, 0))
         except:
             left_lane_detected = False
     if right_lane_detected:
         try:
-            display_image, draw_points_right = drawCurve(display_image, right_fit, (0, 255, 255))
+            display_image, draw_points_right = drawCurve(display_image, right_fit, (0, 255, 0))
         except:
             right_lane_detected = False
     if left_lane_detected and draw_points_left is not None:
@@ -467,7 +654,8 @@ def process_frame_for_moviepy(frame_bgr):
             draw_points_left = draw_points_left.reshape(-1, 1, 2).astype(np.float32)
             draw_points_left_transformed = cv2.perspectiveTransform(draw_points_left, np.linalg.inv(H_left))
             draw_points_left_transformed = (draw_points_left_transformed.reshape(-1, 2)).astype(np.int32)
-            image_overlay = cv2.polylines(image_overlay, [draw_points_left_transformed], False, (0, 0, 255), 4)
+            image_overlay = cv2.polylines(image_overlay, [draw_points_left_transformed], False, (255, 0, 0),
+                                          4)
         except:
             pass
     if right_lane_detected and draw_points_right is not None:
@@ -475,7 +663,8 @@ def process_frame_for_moviepy(frame_bgr):
             draw_points_right = draw_points_right.reshape(-1, 1, 2).astype(np.float32)
             draw_points_right_transformed = cv2.perspectiveTransform(draw_points_right, np.linalg.inv(H_right))
             draw_points_right_transformed = (draw_points_right_transformed.reshape(-1, 2)).astype(np.int32)
-            image_overlay = cv2.polylines(image_overlay, [draw_points_right_transformed], False, (0, 255, 255), 4)
+            image_overlay = cv2.polylines(image_overlay, [draw_points_right_transformed], False, (0, 255, 0),
+                                          4)
         except:
             pass
     if (left_lane_detected and draw_points_left is not None and
@@ -504,12 +693,23 @@ def process_frame_for_moviepy(frame_bgr):
         R_r = 10000.0
     full_display, turn = finalDisplay(image_undistorted, image_bin, colored_warped,
                                       display_image, image_overlay, R_l,
-                                      R_r, turn, "", stream_bad=False)
+                                      R_r, turn, "", left_lane_type, right_lane_type,
+                                      left_line_pattern, right_line_pattern,
+                                      type_confidence_left, type_confidence_right, stream_bad=False)
+
     global_state['old_left_fit'] = old_left_fit if left_lane_detected else global_state['old_left_fit']
     global_state['old_right_fit'] = old_right_fit if right_lane_detected else global_state['old_right_fit']
     global_state['turn'] = turn
+    global_state['left_lane_type'] = left_lane_type
+    global_state['right_lane_type'] = right_lane_type
+    global_state['left_line_pattern'] = left_line_pattern
+    global_state['right_line_pattern'] = right_line_pattern
+    global_state['type_confidence_left'] = type_confidence_left
+    global_state['type_confidence_right'] = type_confidence_right
+
     full_display_rgb = cv2.cvtColor(full_display, cv2.COLOR_BGR2RGB)
     return full_display_rgb
+
 
 def main():
     Parser = argparse.ArgumentParser()
@@ -547,6 +747,7 @@ def main():
             print(f"Error processing {input_path}: {e}")
             continue
     print(f"Done! Processed {len(png_files)} images. Results saved to {Args.OutputDir}")
+
 
 if __name__ == "__main__":
     main()

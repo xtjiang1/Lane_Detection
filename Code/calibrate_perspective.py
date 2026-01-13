@@ -26,7 +26,7 @@ def main():
         return
 
     png_files.sort()
-    first_image_path = png_files[0]
+    first_image_path = png_files[1]
 
     # Load the first image
     orig_img = cv2.imread(first_image_path)
