@@ -116,5 +116,5 @@ def adjust_lane_params_broken_lines(image_path):
 
 
 # Usage
-image_path = '/home/xtjiang/Documents/Project/Lane Features Detection/Lane-Detection/Data/Project2_Dataset2/data_2/images/YW_3.png'
+image_path = '/home/xtjiang/Documents/Project/Lane Features Detection/Lane-Detection/Data/Project2_Dataset2/data_2/images/YYW_1.png'
 params = adjust_lane_params_broken_lines(image_path)

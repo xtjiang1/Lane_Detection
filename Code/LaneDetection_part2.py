@@ -1,6 +1,5 @@
 from Utils.ImageUtils import *
 from Utils.MiscUtils import *
-from Utils.GeometryUtils import *
 from Utils.MovingAverage import *
 import argparse
 import yaml
@@ -174,25 +173,19 @@ def analyze_line_pattern(mask, points):
 
 
 def prioritize_solid_over_dashed(points, binary_mask, detected_pattern):
-    """
-    当同时检测到实线和虚线时，优先选择实线
-    """
     if detected_pattern == 'Solid':
         return 'Solid'
 
-    # 检查是否有足够的连续像素来确认实线
     if len(points) > 0:
-        # 计算点的密度
         y_coords = [p[0] for p in points]
         x_coords = [p[1] for p in points]
 
-        # 检查纵向连续性
         sorted_points = sorted(points, key=lambda x: x[0])
         consecutive_count = 1
         max_consecutive = 1
 
         for i in range(1, len(sorted_points)):
-            if abs(sorted_points[i][0] - sorted_points[i - 1][0]) <= 2:  # 允许间隔1-2个像素
+            if abs(sorted_points[i][0] - sorted_points[i - 1][0]) <= 2:
                 consecutive_count += 1
             else:
                 max_consecutive = max(max_consecutive, consecutive_count)
@@ -200,8 +193,7 @@ def prioritize_solid_over_dashed(points, binary_mask, detected_pattern):
 
         max_consecutive = max(max_consecutive, consecutive_count)
 
-        # 如果有足够的连续像素，优先认定为实线
-        if max_consecutive > 10:  # 阈值可以根据实际情况调整
+        if max_consecutive > 10:
             return 'Solid'
 
     return detected_pattern
@@ -228,10 +220,6 @@ def extractWhiteYellow_separate(image):
     yellow_hls_extra = cv2.inRange(hls, (10, 50, 120), (30, 255, 255))
     yellow_combined = cv2.bitwise_or(yellow_combined, yellow_hls_extra)
     yellow_combined = post_process_yellow_detection(yellow_combined)
-
-    if np.sum(yellow_combined) < 200:
-        yellow_loose = cv2.inRange(hsv, (12, 40, 40), (42, 255, 255))
-        yellow_combined = cv2.bitwise_or(yellow_combined, yellow_loose)
 
     gradient_mask = gradient_based_detection_adaptive(enhanced_image, base_thresh=49)
     white_final = cv2.bitwise_and(white_combined, gradient_mask)
@@ -387,7 +375,6 @@ def findCurvature(coef, x):
         return 10000.0
     R = (1 + dy ** 2) ** (3 / 2)
     R = R / d2y
-    # 移除绝对值，保留符号信息
     R = np.nan_to_num(R, nan=10000.0, posinf=10000.0, neginf=-10000.0)
     return np.min(R)
 
@@ -504,23 +491,20 @@ def finalDisplay(image_undistorted, image_bin, image_warped_colored, display_ima
     turn_curvature = "Curvature not found!"
     turn = old_turn
 
-    # 修改这部分代码 - 反转左右转向判断
     if not (np.isnan(left_curvature) or np.isnan(right_curvature)) and left_curvature != 0 and right_curvature != 0:
         left_sign = 1 if left_curvature > 0 else -1
         right_sign = 1 if right_curvature > 0 else -1
         if left_sign == right_sign:
             av = 0.3 * left_curvature + 0.7 * right_curvature
-            # 反转转向判断逻辑
             if av < 4000 and av > 0:
-                turn = "Turn Right"  # 原来是Turn Left，现在改为Turn Right
+                turn = "Turn Right"
             elif np.abs(av) > 4000:
                 turn = "Go Straight"
             elif av < 0 and av > -4000:
-                turn = "Turn Left"  # 原来是Turn Right，现在改为Turn Left
+                turn = "Turn Left"
             else:
                 turn = "Go Straight"
         else:
-            # 移除平移检测部分，只保留基本转向判断
             turn = "Go Straight"
     else:
         turn = "Go Straight"
